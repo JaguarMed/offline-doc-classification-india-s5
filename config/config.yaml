@@ -1,0 +1,50 @@
+# Configuration du pipeline CV-NLP
+# Classification de documents marocains
+
+# Classes de documents
+classes:
+  - CIN
+  - releve_bancaire
+  - facture_eau
+  - facture_electricite
+  - document_employeur
+
+# Chemins des checkpoints (à remplacer par les vrais chemins après entraînement Colab)
+checkpoints:
+  text: "./checkpoints/text"
+  vision: "./checkpoints/vision"
+
+# Modèle vision (pour CPU: swin_tiny ou deit_small)
+vision_model: "swin_tiny"  # ou "deit_small"
+image_size: 224
+
+# Poids de fusion (soft voting)
+fusion_weights:
+  text: 0.6
+  vision: 0.3
+  orb: 0.1
+
+# Configuration OCR
+ocr:
+  languages: "fra+ara"  # français + arabe
+  cache_dir: "./cache/ocr"
+  enable_cache: true
+
+# Configuration ORB
+orb:
+  max_features: 500
+  scale_factor: 1.2
+  n_levels: 8
+
+# Configuration inference
+inference:
+  batch_size: 1
+  num_threads: 4
+  use_inference_mode: true
+
+
+
+
+
+
+

@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Classification de Documents Marocains</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <style>
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        .spinner {
+            border: 3px solid #f3f4f6;
+            border-top-color: #3b82f6;
+            border-radius: 50%;
+            width: 24px;
+            height: 24px;
+            animation: spin 0.8s linear infinite;
+        }
+    </style>
+</head>
+<body class="bg-gray-50 min-h-screen">
+    <div class="container mx-auto px-4 py-8 max-w-4xl">
+        <header class="text-center mb-8">
+            <h1 class="text-4xl font-bold text-gray-900 mb-2">Classification de Documents Marocains</h1>
+            <p class="text-gray-600">VLM + ORB + RoBERTa Fusion Pipeline</p>
+        </header>
+
+        <div class="bg-white rounded-lg shadow-lg p-6 mb-6">
+            <h2 class="text-2xl font-semibold mb-4">Upload Document</h2>
+            
+            <div id="upload-area" class="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center hover:border-blue-500 transition-colors">
+                <input type="file" id="file-input" accept=".jpg,.jpeg,.png,.pdf" class="hidden">
+                <div id="upload-content">
+                    <svg class="mx-auto h-12 w-12 text-gray-400 mb-4" stroke="currentColor" fill="none" viewBox="0 0 48 48">
+                        <path d="M28 8H12a4 4 0 00-4 4v20m32-12v8m0 0v8a4 4 0 01-4 4H12a4 4 0 01-4-4v-4m32-4l-3.172-3.172a4 4 0 00-5.656 0L28 28M8 32l9.172-9.172a4 4 0 015.656 0L28 28m0 0l4 4m4-24h8m-4-4v8m-12 4h.02" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                    <p class="text-gray-600 mb-2">Cliquez pour uploader ou glissez-déposez</p>
+                    <p class="text-sm text-gray-400">Images (JPG, PNG) ou PDF</p>
+                </div>
+                <div id="upload-progress" class="hidden">
+                    <div class="spinner mx-auto mb-2"></div>
+                    <p class="text-blue-600">Upload en cours...</p>
+                </div>
+            </div>
+
+            <div id="file-info" class="mt-4 hidden">
+                <div class="flex items-center justify-between bg-gray-50 p-3 rounded">
+                    <span id="file-name" class="text-sm font-medium"></span>
+                    <button id="remove-file" class="text-red-600 hover:text-red-700 text-sm">Retirer</button>
+                </div>
+            </div>
+
+            <button id="classify-btn" class="mt-6 w-full bg-blue-600 text-white py-3 rounded-lg font-semibold hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors" disabled>
+                Classifier le Document
+            </button>
+        </div>
+
+        <div id="results-container" class="hidden">
+            <!-- Résultats seront injectés ici -->
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = 'http://localhost:8000/api';
+        let currentFileId = null;
+
+        const uploadArea = document.getElementById('upload-area');
+        const fileInput = document.getElementById('file-input');
+        const uploadContent = document.getElementById('upload-content');
+        const uploadProgress = document.getElementById('upload-progress');
+        const fileInfo = document.getElementById('file-info');
+        const fileName = document.getElementById('file-name');
+        const removeFile = document.getElementById('remove-file');
+        const classifyBtn = document.getElementById('classify-btn');
+        const resultsContainer = document.getElementById('results-container');
+
+        // Upload area click
+        uploadArea.addEventListener('click', () => fileInput.click());
+        uploadArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadArea.classList.add('border-blue-500', 'bg-blue-50');
+        });
+        uploadArea.addEventListener('dragleave', () => {
+            uploadArea.classList.remove('border-blue-500', 'bg-blue-50');
+        });
+        uploadArea.addEventListener('drop', async (e) => {
+            e.preventDefault();
+            uploadArea.classList.remove('border-blue-500', 'bg-blue-50');
+            if (e.dataTransfer.files.length > 0) {
+                await handleFile(e.dataTransfer.files[0]);
+            }
+        });
+
+        fileInput.addEventListener('change', async (e) => {
+            if (e.target.files.length > 0) {
+                await handleFile(e.target.files[0]);
+            }
+        });
+
+        async function handleFile(file) {
+            const formData = new FormData();
+            formData.append('file', file);
+
+            uploadContent.classList.add('hidden');
+            uploadProgress.classList.remove('hidden');
+            classifyBtn.disabled = true;
+
+            try {
+                const response = await fetch(`${API_BASE}/upload`, {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (!response.ok) throw new Error('Upload failed');
+
+                const data = await response.json();
+                currentFileId = data.file_id;
+                
+                fileName.textContent = file.name;
+                fileInfo.classList.remove('hidden');
+                classifyBtn.disabled = false;
+            } catch (error) {
+                Swal.fire({
+                    icon: 'error',
+                    title: 'Erreur Upload',
+                    text: error.message,
+                    confirmButtonColor: '#3b82f6'
+                });
+            } finally {
+                uploadContent.classList.remove('hidden');
+                uploadProgress.classList.add('hidden');
+            }
+        }
+
+        removeFile.addEventListener('click', () => {
+            currentFileId = null;
+            fileInput.value = '';
+            fileInfo.classList.add('hidden');
+            classifyBtn.disabled = true;
+            resultsContainer.classList.add('hidden');
+        });
+
+        classifyBtn.addEventListener('click', async () => {
+            if (!currentFileId) return;
+
+            classifyBtn.disabled = true;
+            classifyBtn.textContent = 'Classification en cours...';
+            resultsContainer.classList.add('hidden');
+            
+            // Afficher une notification de progression
+            Swal.fire({
+                title: 'Classification en cours',
+                html: 'Traitement du document...<br/><div class="spinner mx-auto mt-4"></div>',
+                allowOutsideClick: false,
+                allowEscapeKey: false,
+                showConfirmButton: false,
+                didOpen: () => {
+                    Swal.showLoading();
+                }
+            });
+
+            try {
+                const response = await fetch(`${API_BASE}/classify?file_id=${currentFileId}`, {
+                    method: 'POST'
+                });
+                if (!response.ok) throw new Error('Classification failed');
+                
+                const results = await response.json();
+                
+                // Fermer la notification de progression
+                Swal.close();
+                
+                // Afficher un message de succès
+                Swal.fire({
+                    icon: 'success',
+                    title: 'Classification terminée!',
+                    text: `Niveau 1: ${results.final_level1 || 'N/A'}`,
+                    timer: 2000,
+                    showConfirmButton: false
+                }).then(() => {
+                    displayResults(results);
+                });
+            } catch (error) {
+                Swal.fire({
+                    icon: 'error',
+                    title: 'Erreur Classification',
+                    text: error.message,
+                    confirmButtonColor: '#3b82f6'
+                });
+            } finally {
+                classifyBtn.disabled = false;
+                classifyBtn.textContent = 'Classifier le Document';
+            }
+        });
+
+        function displayResults(results) {
+            // Redirect to results page
+            sessionStorage.setItem('classificationResults', JSON.stringify(results));
+            sessionStorage.setItem('fileId', currentFileId);
+            window.location.href = 'result.html';
+        }
+    </script>
+</body>
+</html>
+
