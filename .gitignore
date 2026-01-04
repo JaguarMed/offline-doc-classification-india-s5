@@ -60,9 +60,17 @@ paths.json
 # Dataset (too large for git)
 dataset/
 
-# Models checkpoints (too large)
-models_checkpoint/
-checkpoints/
+# Models checkpoints - large files only
+models_checkpoint/**/*.safetensors
+models_checkpoint/**/*.bin
+models_checkpoint/**/*.pt
+models_checkpoint/**/*.pth
+models_checkpoint/**/*.ckpt
+checkpoints/**/*.safetensors
+checkpoints/**/*.bin
+checkpoints/**/*.pt
+checkpoints/**/*.pth
+checkpoints/**/*.ckpt
 
 # Logs
 *.log
