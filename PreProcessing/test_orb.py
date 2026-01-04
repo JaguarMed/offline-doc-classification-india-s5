@@ -1,11 +1,3 @@
-"""
-Script de test simple pour ORB seul
-====================================
-
-Teste uniquement ORB pour la classification de documents.
-Supporte les images et les PDFs (chaque page est testee separement).
-"""
-
 import sys
 import os
 sys.path.insert(0, os.path.dirname(__file__))
@@ -35,7 +27,6 @@ except ImportError:
         HAS_PDF2IMAGE = False
 
 def extract_pdf_pages(pdf_path: str):
-    """Extrait les pages d'un PDF comme des images PIL"""
     pages = []
     try:
         if HAS_FITZ:
@@ -59,18 +50,10 @@ def extract_pdf_pages(pdf_path: str):
         return []
 
 def test_orb(query_path: str, dataset_root: str = r"C:\NLP-CV\dataset"):
-    """
-    Teste ORB sur une image query ou un PDF.
-    
-    Args:
-        query_path: Chemin de l'image query ou PDF
-        dataset_root: Racine du dataset
-    """
     print(f"{'='*60}")
     print("TEST ORB SEUL")
     print(f"{'='*60}\n")
     
-    # Charger la galerie ORB
     print("Chargement de la galerie ORB...")
     orb_gallery = load_orb_gallery(ORB_CACHE_DIR)
     if orb_gallery is None:
@@ -80,7 +63,6 @@ def test_orb(query_path: str, dataset_root: str = r"C:\NLP-CV\dataset"):
     
     print(f"  OK: {len(orb_gallery)} classes dans la galerie\n")
     
-    # Afficher les classes disponibles
     print("Classes disponibles dans la galerie:")
     for class_name, ref_features in orb_gallery.items():
         num_refs = len(ref_features)
@@ -88,12 +70,10 @@ def test_orb(query_path: str, dataset_root: str = r"C:\NLP-CV\dataset"):
             print(f"  - {class_name}: {num_refs} images de reference")
     print()
     
-    # Verifier si c'est un PDF
     query_path_lower = query_path.lower()
     is_pdf = query_path_lower.endswith('.pdf')
     
     if is_pdf:
-        # Traitement PDF
         print(f"Traitement du PDF: {query_path}")
         pages = extract_pdf_pages(query_path)
         if not pages:
@@ -102,14 +82,12 @@ def test_orb(query_path: str, dataset_root: str = r"C:\NLP-CV\dataset"):
         
         print(f"  PDF contient {len(pages)} page(s)\n")
         
-        # Tester chaque page
         all_page_results = []
         for page_num, pil_img in pages:
             print(f"{'='*60}")
             print(f"PAGE {page_num}")
             print(f"{'='*60}")
             
-            # Sauvegarder temporairement l'image PIL en fichier pour ORB
             import tempfile
             with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp_file:
                 pil_img.save(tmp_file.name)
@@ -142,13 +120,11 @@ def test_orb(query_path: str, dataset_root: str = r"C:\NLP-CV\dataset"):
                     if score > 0:
                         print(f"  {i}. {class_name}: {score:.4f} ({score*100:.2f}%)")
             finally:
-                # Supprimer le fichier temporaire
                 try:
                     os.unlink(tmp_path)
                 except:
                     pass
         
-        # Resume pour toutes les pages
         print(f"\n{'='*60}")
         print("RESUME TOUTES LES PAGES")
         print(f"{'='*60}")
@@ -158,12 +134,11 @@ def test_orb(query_path: str, dataset_root: str = r"C:\NLP-CV\dataset"):
             print(f"Page {page_num}: {result['best_class_4']} (score: {result['best_score']:.4f})")
         print(f"{'='*60}")
     else:
-        # Traitement image unique
         print(f"Matching ORB pour: {query_path}")
         orb_result = match_query_orb(
             query_path, 
             orb_gallery, 
-            candidate_classes=None,  # Tester toutes les classes
+            candidate_classes=None,
             dataset_root=dataset_root
         )
         
@@ -188,32 +163,20 @@ def test_orb(query_path: str, dataset_root: str = r"C:\NLP-CV\dataset"):
         print(f"{'='*60}")
 
 def choose_file_with_explorer(initial_dir: str = None) -> str:
-    """
-    Ouvre l'explorateur de fichiers Windows pour choisir un fichier.
-    
-    Args:
-        initial_dir: Dossier initial (par défaut: dataset_root)
-    
-    Returns:
-        Chemin complet du fichier choisi, ou None si annule
-    """
     if not HAS_TKINTER:
         print("Erreur: tkinter n'est pas disponible. Utilisez le mode interactif ou specifiez un fichier.")
         return None
     
-    # Cacher la fenetre principale de tkinter
     root = tk.Tk()
     root.withdraw()
     root.attributes('-topmost', True)
     
-    # Definir le dossier initial
     if initial_dir is None:
         initial_dir = r"C:\NLP-CV\dataset"
     
     if not os.path.exists(initial_dir):
         initial_dir = os.getcwd()
     
-    # Types de fichiers acceptes
     filetypes = [
         ("Tous les fichiers images et PDF", "*.jpg *.jpeg *.png *.bmp *.tiff *.tif *.webp *.pdf"),
         ("Images", "*.jpg *.jpeg *.png *.bmp *.tiff *.tif *.webp"),
@@ -221,7 +184,6 @@ def choose_file_with_explorer(initial_dir: str = None) -> str:
         ("Tous les fichiers", "*.*")
     ]
     
-    # Ouvrir le dialogue de selection de fichier
     file_path = filedialog.askopenfilename(
         title="Choisir un document ou une image pour la classification",
         initialdir=initial_dir,
@@ -248,7 +210,6 @@ def main():
     
     args = parser.parse_args()
     
-    # Mode interactif (explorateur de fichiers)
     if args.interactive or args.query_image is None:
         selected_file = choose_file_with_explorer(args.dataset_root)
         if selected_file is None:
@@ -264,4 +225,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

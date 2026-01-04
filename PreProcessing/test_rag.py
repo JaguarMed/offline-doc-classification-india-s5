@@ -1,5 +1,3 @@
-
-
 import torch
 import torch.nn.functional as F
 import os
@@ -26,18 +24,15 @@ except:
     except:
         HAS_PDF2IMAGE = False
 
-# Configuration
 DATASET_ROOT = r"C:\NLP-CV\dataset"
 CACHE_EMBEDDINGS = "embeddings.npy"
 CACHE_PATHS = "paths.json"
 LABEL_MAPPING_FILE = "image_to_label_mapping.json"
 MODEL_SIGLIP = "google/siglip-base-patch16-224"
-# Qwen2-VL-2B - modèle léger compatible avec 8GB VRAM
 MODEL_QWEN = "Qwen/Qwen2-VL-2B-Instruct"
 IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif', '.webp'}
 PDF_EXTENSIONS = {'.pdf'}
 
-# Classes niveau 1 (4 classes principales)
 LEVEL1_CLASSES = [
     "CIN",
     "DOCUMENT EMPLOYEUR",
@@ -45,7 +40,6 @@ LEVEL1_CLASSES = [
     "RELEVE BANCAIRE"
 ]
 
-# Classes niveau 2 (12+ classes exactes)
 LEVEL2_CLASSES = [
     "CIN_front",
     "CIN_back",
@@ -63,7 +57,6 @@ LEVEL2_CLASSES = [
     "Fiche de paie"
 ]
 
-# Mapping niveau 2 -> niveau 1 (dossiers -> classes principales)
 LABEL_MAPPING = {
     'CIN': 'CIN',
     'document administrative': 'DOCUMENT EMPLOYEUR',
@@ -113,10 +106,6 @@ def load_qwen_model(device):
         raise
 
 def get_image_files(dataset_root):
-    """
-    Récupère tous les fichiers images et PDFs du dataset.
-    Pour les PDFs, chaque page sera traitée séparément dans build_index.
-    """
     image_files = []
     pdf_files = []
     
@@ -140,7 +129,6 @@ def embed_image_siglip(image_path, processor, model, device):
         return None
 
 def embed_image_siglip_from_pil(pil_img, processor, model, device):
-    """Génère un embedding SigLIP depuis une image PIL"""
     try:
         inputs = processor(images=pil_img, return_tensors="pt")
         pixel_values = inputs['pixel_values'].to(device)
@@ -159,11 +147,6 @@ def embed_image_siglip_from_pil(pil_img, processor, model, device):
         return None
 
 def predict_level1_qwen(image_path, processor, model, device, use_level2=False):
-    """
-    Prédit la classe du document avec Qwen2-VL.
-    Si use_level2=True, utilise les 12+ classes exactes, sinon les 4 classes principales.
-    Prompt optimisé pour les documents marocains.
-    """
     if use_level2:
         classes_list = LEVEL2_CLASSES
         prompt = """This is a Moroccan document. Identify its exact class.
@@ -233,7 +216,6 @@ Answer with ONLY ONE category: CIN, RELEVE BANCAIRE, FACTURE D'EAU ET D'ELECTRIC
             }
         ]
         
-        # Utiliser apply_chat_template pour formater les messages
         try:
             text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
         except Exception as e:
@@ -242,7 +224,6 @@ Answer with ONLY ONE category: CIN, RELEVE BANCAIRE, FACTURE D'EAU ET D'ELECTRIC
         
         image_input = messages[0]["content"][0]["image"]
         
-        # S'assurer que text est une string
         if isinstance(text, dict):
             text = text.get('text', text.get('prompt', prompt))
         elif not isinstance(text, str):
@@ -254,7 +235,6 @@ Answer with ONLY ONE category: CIN, RELEVE BANCAIRE, FACTURE D'EAU ET D'ELECTRIC
         if not isinstance(image_input, Image.Image):
             image_input = img
         
-        # Processeur Qwen2-VL
         try:
             inputs = processor(text=text, images=[image_input], padding=True, return_tensors="pt")
         except Exception as e:
@@ -290,39 +270,32 @@ Answer with ONLY ONE category: CIN, RELEVE BANCAIRE, FACTURE D'EAU ET D'ELECTRIC
         
         print(f"[VLM RAW] Response: {response_clean[:100]}")
         
-        # Chercher une correspondance exacte dans les classes
         for class_name in classes_list:
             class_upper = class_name.upper()
             if class_upper in response_upper or response_upper in class_upper:
                 return class_name, 0.9
         
-        # Fallback amélioré pour Level 1 avec plus de mots-clés
         if not use_level2:
-            # CIN - Carte d'identité
             cin_keywords = ["CIN", "CNIE", "IDENTITE", "IDENTITÉ", "CARTE NATIONALE", "IDENTITY", "ID CARD", 
                            "البطاقة", "الوطنية", "NATIONALE"]
             if any(kw in response_upper for kw in cin_keywords):
                 return "CIN", 0.85
             
-            # RELEVE BANCAIRE
             bank_keywords = ["BANCAIRE", "BANQUE", "BANK", "RELEVE", "RELEVÉ", "COMPTE", "ATTIJARIWAFA", 
                             "POPULAIRE", "CIH", "BMCE", "BOA", "BARID", "AGRICOLE", "CDM", "GENERALE"]
             if any(kw in response_upper for kw in bank_keywords):
                 return "RELEVE BANCAIRE", 0.85
             
-            # FACTURE
             facture_keywords = ["FACTURE", "ELECTRICITE", "ÉLECTRICITÉ", "EAU", "ONEE", "LYDEC", 
                                "AMENDIS", "REDAL", "RADEEMA", "KWH", "CONSOMMATION"]
             if any(kw in response_upper for kw in facture_keywords):
                 return "FACTURE D'EAU ET D'ELECTRICITE", 0.85
             
-            # DOCUMENT EMPLOYEUR
             emp_keywords = ["EMPLOYEUR", "EMPLOI", "TRAVAIL", "SALAIRE", "PAIE", "ATTESTATION", 
                            "CONTRAT", "CONTRACT", "BULLETIN", "CERTIFICAT", "ENTREPRISE"]
             if any(kw in response_upper for kw in emp_keywords):
                 return "DOCUMENT EMPLOYEUR", 0.85
         
-        # Si Level2, chercher des correspondances partielles
         if use_level2:
             response_lower = response_clean.lower()
             if "cin" in response_lower:
@@ -330,7 +303,6 @@ Answer with ONLY ONE category: CIN, RELEVE BANCAIRE, FACTURE D'EAU ET D'ELECTRIC
                     return "CIN_back", 0.8
                 return "CIN_front", 0.8
             if "releve" in response_lower or "bancaire" in response_lower:
-                # Chercher la banque
                 if "attijari" in response_lower: return "Releve bancaire Attijariwafa bank", 0.8
                 if "populaire" in response_lower: return "Releve bancaire BANQUE POPULAIRE", 0.8
                 if "cih" in response_lower: return "Releve bancaire CIH BANK", 0.8
@@ -379,7 +351,6 @@ def build_index(dataset_root, device, cache_dir="."):
         if device.type == 'cuda' and len(embeddings_list) % 50 == 0:
             torch.cuda.empty_cache()
     
-    # Traiter les PDFs: extraire chaque page comme une image
     print(f"\nTraitement des PDFs ({len(pdf_files)} fichiers)...")
     for pdf_path in tqdm(pdf_files, desc="Processing PDFs"):
         try:
@@ -391,11 +362,9 @@ def build_index(dataset_root, device, cache_dir="."):
                     img_data = pix.tobytes("ppm")
                     pil_img = Image.open(io.BytesIO(img_data))
                     
-                    # Créer un embedding pour cette page
                     embedding = embed_image_siglip_from_pil(pil_img, processor, model, device)
                     if embedding is not None:
                         embeddings_list.append(embedding)
-                        # Créer un chemin relatif avec le numéro de page
                         rel_path = os.path.relpath(pdf_path, dataset_base)
                         paths_list.append(f"{rel_path}::page_{page_num + 1}")
                 pdf_doc.close()
@@ -450,38 +419,22 @@ def load_index(cache_dir="."):
     return embeddings, cache_data['paths'], cache_data['dataset_base']
 
 def retrieve_topk(query_embedding, embeddings, paths, k=5, return_all=False):
-    """
-    Récupère les k images les plus similaires, ou tous les résultats si return_all=True.
-    
-    Args:
-        query_embedding: Embedding de la requête
-        embeddings: Matrice d'embeddings du dataset
-        paths: Liste des chemins correspondants
-        k: Nombre de résultats à retourner (ignoré si return_all=True)
-        return_all: Si True, retourne tous les résultats triés par similarité
-    """
-    # S'assurer que paths est une liste
     if not isinstance(paths, list):
         if isinstance(paths, dict):
-            # Si c'est un dict, essayer d'extraire la liste des paths
             if 'paths' in paths:
                 paths = paths['paths']
             else:
-                # Si c'est un dict avec des clés numériques, convertir en liste triée
                 try:
                     sorted_keys = sorted([k for k in paths.keys() if isinstance(k, (int, str))])
                     paths = [paths[k] for k in sorted_keys]
                 except:
-                    # Dernier recours: utiliser les valeurs
                     paths = list(paths.values())
         else:
-            # Convertir en liste si possible
             try:
                 paths = list(paths)
             except:
                 raise ValueError(f"paths doit être une liste, reçu: {type(paths)}")
     
-    # S'assurer que query_embedding est un array numpy 1D
     if isinstance(query_embedding, (list, tuple)):
         query_embedding = np.array(query_embedding)
     if query_embedding.ndim > 1:
@@ -490,13 +443,11 @@ def retrieve_topk(query_embedding, embeddings, paths, k=5, return_all=False):
     similarities = np.dot(embeddings, query_embedding)
     
     if return_all:
-        # Trier tous les résultats par similarité décroissante
         all_indices = np.argsort(similarities)[::-1]
         all_scores = similarities[all_indices]
         all_paths = [paths[int(idx)] for idx in all_indices]
         return list(zip(all_paths, all_scores))
     else:
-        # Retourner seulement les top-k
         top_k_indices = np.argsort(similarities)[::-1][:k]
         top_k_scores = similarities[top_k_indices]
         top_k_paths = [paths[int(idx)] for idx in top_k_indices]
@@ -505,7 +456,6 @@ def retrieve_topk(query_embedding, embeddings, paths, k=5, return_all=False):
 _label_mapping_cache = None
 
 def load_label_mapping(mapping_file=LABEL_MAPPING_FILE):
-    """Charge le mapping des chemins vers les classes exactes"""
     global _label_mapping_cache
     if _label_mapping_cache is not None:
         return _label_mapping_cache
@@ -517,13 +467,9 @@ def load_label_mapping(mapping_file=LABEL_MAPPING_FILE):
     return {}
 
 def get_label_from_path(path, dataset_base):
-    """Récupère la classe exacte (output_precision) depuis le mapping, sinon utilise le nom de dossier"""
-    # Essayer d'abord avec le mapping des classes exactes
     mapping = load_label_mapping()
     
-    # Normaliser le chemin (gérer les PDFs avec numéro de page)
     if '::page_' in path:
-        # C'est une page de PDF, extraire le chemin de base
         base_path = path.split('::page_')[0]
     else:
         base_path = path
@@ -533,16 +479,13 @@ def get_label_from_path(path, dataset_base):
     else:
         rel_path = base_path
     
-    # Essayer avec \ et /
     for path_variant in [rel_path, rel_path.replace('\\', '/'), rel_path.replace('/', '\\')]:
         if path_variant in mapping:
             return mapping[path_variant]
     
-    # Fallback: utiliser le nom de dossier
     parts = Path(rel_path).parts
     if len(parts) > 0:
         folder_name = parts[0]
-        # Mapping des noms de dossiers vers les classes par défaut
         folder_to_label = {
             'CIN': 'CIN',
             'document administrative': 'Document Administratif Général',
@@ -554,41 +497,30 @@ def get_label_from_path(path, dataset_base):
     return None
 
 def detect_cin_front_back_mrz(image_path_or_pil):
-    """
-    Détecte si une image CIN est front ou back en utilisant la détection MRZ (Machine Readable Zone).
-    Le MRZ se trouve généralement sur le dos (back) de la carte.
-    """
     try:
-        # Charger l'image
         if isinstance(image_path_or_pil, str):
             img = cv2.imread(image_path_or_pil)
             if img is None:
-                # Essayer avec PIL si cv2 échoue (pour les chemins avec caractères spéciaux)
                 pil_img = Image.open(image_path_or_pil).convert('RGB')
                 img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
         else:
-            # C'est une image PIL
             img = cv2.cvtColor(np.array(image_path_or_pil), cv2.COLOR_RGB2BGR)
         
         H, W = img.shape[:2]
         
-        # Le MRZ se trouve généralement dans la partie inférieure (55-100% de la hauteur)
         lower_region = img[int(0.55 * H):H, 0:W]
         gray_lower = cv2.cvtColor(lower_region, cv2.COLOR_BGR2GRAY)
         
-        # Essayer d'importer pytesseract (optionnel)
         try:
             import pytesseract
             pytesseract.pytesseract.tesseract_cmd = r"C:\Tesseract\tesseract.exe"
             
-            # OCR sur la région inférieure avec whitelist pour MRZ
             mrz_text = pytesseract.image_to_string(
                 gray_lower, 
                 lang="eng", 
                 config="--oem 1 --psm 6 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789<"
             )
             
-            # Le MRZ contient généralement "<<"
             has_mrz = ("<<" in mrz_text) or (re.search(r"<{2,}", mrz_text) is not None)
             
             if has_mrz:
@@ -596,28 +528,15 @@ def detect_cin_front_back_mrz(image_path_or_pil):
             else:
                 return 'CIN_front'
         except ImportError:
-            # Si pytesseract n'est pas disponible, retourner CIN générique
             return 'CIN'
     except Exception as e:
-        return 'CIN'  # En cas d'erreur, retourner CIN générique
+        return 'CIN'
 
 def predict_label12(all_results, dataset_base, query_image_path=None, query_source_path=None, use_all_results=True, similarity_threshold=0.7):
-    """
-    Prédit la classe niveau 2 (12 classes exactes) en utilisant un vote pondéré.
-    Pour CIN, utilise la détection MRZ pour distinguer front/back.
-    Utilise aussi le dossier source comme indice fort.
-    
-    Args:
-        all_results: Liste de tuples (path, similarity_score) - peut être tous les résultats ou top-k
-        use_all_results: Si True, utilise tous les résultats, sinon seulement les résultats fournis
-        similarity_threshold: Seuil de similarité minimum (filtrer les résultats peu pertinents)
-    """
     label_scores = {}
     
-    # Filtrer les résultats avec une similarité suffisante
     filtered_results = [(path, score) for path, score in all_results if score >= similarity_threshold]
     
-    # Si aucun résultat n'a une similarité suffisante, utiliser les top-10
     if not filtered_results:
         filtered_results = sorted(all_results, key=lambda x: x[1], reverse=True)[:10]
     
@@ -631,13 +550,11 @@ def predict_label12(all_results, dataset_base, query_image_path=None, query_sour
     if not label_scores:
         return None, 0.0
     
-    # Utiliser le dossier source comme indice fort si disponible
     if query_source_path and os.path.exists(query_source_path):
         try:
             source_rel = os.path.relpath(query_source_path, dataset_base)
             source_folder = Path(source_rel).parts[0] if Path(source_rel).parts else None
             
-            # Mapping dossier -> classe
             folder_to_class = {
                 'CIN': 'CIN',
                 'releve bancaire': 'Releve bancaire',
@@ -647,40 +564,31 @@ def predict_label12(all_results, dataset_base, query_image_path=None, query_sour
             
             if source_folder and source_folder in folder_to_class:
                 source_class = folder_to_class[source_folder]
-                # Donner un bonus fort au label correspondant au dossier source
                 if source_class not in label_scores:
                     label_scores[source_class] = []
-                # Ajouter un score élevé (0.9) pour ce label basé sur le contexte
                 label_scores[source_class].append(0.9)
         except:
             pass
     
-    # Détection spéciale pour CIN: utiliser MRZ pour distinguer front/back
     if 'CIN' in label_scores and query_image_path:
         try:
             detected_cin_type = detect_cin_front_back_mrz(query_image_path)
             if detected_cin_type in ['CIN_front', 'CIN_back']:
                 predicted_label = detected_cin_type
-                # Utiliser la moyenne des scores CIN comme confiance
                 cin_scores = label_scores['CIN']
                 confidence = np.mean(cin_scores)
                 max_score = max([score for scores in label_scores.values() for score in scores])
                 confidence_normalized = confidence / max_score if max_score > 0 else 0.0
                 return predicted_label, confidence_normalized
         except:
-            pass  # Si la détection échoue, utiliser le vote normal
+            pass
     
-    # Vote normal pour les autres cas - utiliser moyenne pondérée par score
-    # Plus le score de similarité est élevé, plus le poids est important
     label_weighted_scores = {}
     for label, scores in label_scores.items():
-        # Utiliser la moyenne pondérée (les scores élevés comptent plus)
-        # Ou simplement prendre le score maximum pour chaque label
-        label_weighted_scores[label] = np.mean(scores) * (1 + np.max(scores))  # Ponderer par le max aussi
+        label_weighted_scores[label] = np.mean(scores) * (1 + np.max(scores))
     
     predicted_label = max(label_weighted_scores, key=label_weighted_scores.get)
     
-    # Calculer la confiance
     predicted_scores = label_scores[predicted_label]
     confidence = np.mean(predicted_scores)
     max_score = max([score for scores in label_scores.values() for score in scores])
@@ -689,34 +597,26 @@ def predict_label12(all_results, dataset_base, query_image_path=None, query_sour
     return predicted_label, confidence_normalized
 
 def map_12_to_4(label12):
-    """
-    Mappe une classe niveau 2 (12 classes exactes) vers une classe niveau 1 (4 classes principales).
-    """
     if not label12:
         return 'UNKNOWN'
     
     label12_str = str(label12).strip()
     
-    # Recherche exacte d'abord
     if label12_str in LABEL_MAPPING:
         return LABEL_MAPPING[label12_str]
     
-    # Recherche case-insensitive
     label12_lower = label12_str.lower()
     for key, value in LABEL_MAPPING.items():
         if key.lower() == label12_lower:
             return value
     
-    # Recherche par inclusion (si la classe contient un mot-clé)
     for key, value in LABEL_MAPPING.items():
         key_lower = key.lower()
-        # Si le label commence par un mot-clé ou contient un mot-clé distinctif
         if (label12_lower.startswith(key_lower) or 
             key_lower in label12_lower or 
             label12_lower in key_lower):
             return value
     
-    # Fallback: recherche par mots-clés génériques
     label12_upper = label12_str.upper()
     if 'CIN' in label12_upper or 'IDENTITE' in label12_upper or 'CARTE' in label12_upper:
         return 'CIN'
@@ -792,7 +692,6 @@ def main():
     try:
         qwen_processor, qwen_model = load_qwen_model(device)
         print(f"Prediction pour: {args.query_image}")
-        # Utiliser les 12 classes exactes dans le prompt Qwen2-VL
         label4_qwen, conf4_qwen = predict_level1_qwen(args.query_image, qwen_processor, qwen_model, device, use_level2=True)
         if label4_qwen:
             print(f"Prediction Qwen2-VL: {label4_qwen} (confiance: {conf4_qwen:.2f})")
@@ -809,12 +708,10 @@ def main():
     print(f"{'='*60}")
     siglip_processor, siglip_model = load_siglip_model(device)
     
-    # Vérifier si c'est un PDF ou une image
     query_path_lower = args.query_image.lower()
     is_pdf = query_path_lower.endswith('.pdf')
     
     if is_pdf:
-        # Traitement PDF
         print(f"Traitement du PDF: {args.query_image}")
         if not HAS_FITZ and not HAS_PDF2IMAGE:
             print("Erreur: Aucune bibliothèque PDF disponible (PyMuPDF ou pdf2image)")
@@ -842,7 +739,6 @@ def main():
             print(f"Erreur lors de la conversion du PDF: {e}")
             sys.exit(1)
         
-        # Traiter chaque page
         all_page_results = []
         for page_num, pil_img in pdf_results:
             print(f"\n--- Page {page_num} ---")
@@ -853,19 +749,14 @@ def main():
             
             print(f"  Recherche des images similaires (utilise tous les résultats pour le vote)...")
             all_results = retrieve_topk(query_embedding, embeddings, paths, k=args.k, return_all=True)
-            # Pour l'affichage, prendre seulement les top-k
             topk_results = all_results[:args.k]
             
-            # Afficher les top-k résultats pour déboguer
             print(f"\n  Top {len(topk_results)} images similaires:")
             for i, (path, score) in enumerate(topk_results[:5], 1):
                 label_debug = get_label_from_path(path, dataset_base)
                 print(f"    {i}. {path}")
                 print(f"       Label: {label_debug}, Similarite: {score:.4f}")
             
-            # Pour les PDFs, passer l'image PIL pour la détection CIN front/back
-            # Et passer le chemin source pour utiliser le dossier comme indice
-            # Utiliser TOUS les résultats pour le vote (pas seulement top-k)
             label12, conf12 = predict_label12(all_results, dataset_base, query_image_path=pil_img, query_source_path=args.query_image, use_all_results=True)
             label4_rag = map_12_to_4(label12) if label12 else 'UNKNOWN'
             
@@ -879,7 +770,6 @@ def main():
             
             print(f"  Resultat: {label12} (confiance: {conf12:.4f}) -> {label4_rag}")
         
-        # Afficher les résultats pour toutes les pages
         print(f"\n{'='*60}")
         print(f"RESULTATS FINAUX (PDF - {len(all_page_results)} pages):")
         print(f"{'='*60}")
@@ -898,7 +788,6 @@ def main():
                 print(f"  Top-1 similaire: {topk_results[0][0]} (similarite: {topk_results[0][1]:.4f})")
         print(f"{'='*60}")
     else:
-        # Traitement image unique
         print(f"Calcul de l'embedding SigLIP pour: {args.query_image}")
         query_embedding = embed_image_siglip(args.query_image, siglip_processor, siglip_model, device)
         
@@ -908,7 +797,6 @@ def main():
         
         print(f"Recherche des images similaires (utilise tous les résultats pour le vote)...")
         all_results = retrieve_topk(query_embedding, embeddings, paths, k=args.k, return_all=True)
-        # Pour l'affichage, prendre seulement les top-k
         topk_results = all_results[:args.k]
         
         print(f"\nTop {len(topk_results)} images similaires:\n")
@@ -919,9 +807,6 @@ def main():
         
         check_sanity(args.query_image, topk_results, dataset_base)
         
-        # Passer le chemin de l'image pour la détection CIN front/back
-        # Et passer le chemin source pour utiliser le dossier comme indice
-        # Utiliser TOUS les résultats pour le vote (pas seulement top-k)
         label12, conf12 = predict_label12(all_results, dataset_base, query_image_path=args.query_image, query_source_path=args.query_image, use_all_results=True)
         label4_rag = map_12_to_4(label12) if label12 else 'UNKNOWN'
         

@@ -9,7 +9,7 @@ dataset_file = r"C:\NLP-CV\dataset\Data.xlsx"
 
 USE_EASYOCR = False
 try:
-    import easyocr
+    import pytesseract
     USE_EASYOCR = True
     print("EasyOCR disponible - utilisation d'EasyOCR pour OCR")
 except ImportError:

@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-"""Pipeline de classification intégrant VLM, ORB et RoBERTa avec détection par mots-clés"""
 import torch
 import numpy as np
 from PIL import Image
@@ -12,22 +11,18 @@ import time
 import cv2
 import re
 
-# Ajouter PreProcessing au path
 sys.path.insert(0, str(Path(__file__).parent.parent / "PreProcessing"))
 
 from api.config import *
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-# Imports depuis PreProcessing
 from PreProcessing.test_rag import (
     load_qwen_model, predict_level1_qwen,
     embed_image_siglip, retrieve_topk, predict_label12, get_label_from_path
 )
 
-# Fonction pour extraire les pages PDF (utilisée aussi dans test_orb.py)
 def extract_pdf_pages(pdf_path):
-    """Extrait les pages d'un PDF comme des images PIL"""
     try:
         import fitz
         HAS_FITZ = True
@@ -64,9 +59,7 @@ def extract_pdf_pages(pdf_path):
 
 from PreProcessing.orb_matcher import load_orb_gallery, match_query_orb, CLASSES_4
 
-# Pour RoBERTa, on doit charger le modèle manuellement
 def load_roberta_model(device):
-    """Charge le modèle RoBERTa (XLM-RoBERTa large)"""
     try:
         from transformers import AutoTokenizer, AutoModelForSequenceClassification
         tokenizer = AutoTokenizer.from_pretrained(MODEL_ROBERTA)
@@ -78,7 +71,6 @@ def load_roberta_model(device):
         print(f"Erreur chargement RoBERTa: {e}")
         return None, None
 
-# Imports OCR optionnels
 try:
     import pytesseract
     pytesseract.pytesseract.tesseract_cmd = r'C:\Tesseract\tesseract.exe'
@@ -86,48 +78,36 @@ try:
 except:
     HAS_OCR = False
 
-# ============================================================================
-# MOTS-CLÉS POUR DÉTECTION - BASÉS SUR LES DOCUMENTS MAROCAINS
-# ============================================================================
-
-# MOTS-CLÉS CIN MAROCAINE (Carte Nationale d'Identité)
 CIN_KEYWORDS = {
-    # Mots-clés très spécifiques (poids fort)
     "strong": [
         "carte nationale", "carte d'identité", "البطاقة الوطنية",
         "royaume du maroc", "المملكة المغربية", "cnie",
         "carte nationale d'identité électronique",
         "identité nationale", "بطاقة التعريف الوطنية"
     ],
-    # Mots-clés du recto (front) - UNIQUEMENT ce qui apparaît sur le recto
     "front": [
         "date de naissance", "تاريخ الازدياد", "née le", "né le",
         "lieu de naissance", "مكان الازدياد",
         "signature", "الإمضاء", "توقيع"
     ],
-    # Mots-clés du verso (back) - Adresse, validité, code-barres
     "back": [
         "adresse", "العنوان", "address",
         "valable jusqu", "صالحة إلى غاية", "validité", "صالحة الى",
         "numéro de série", "رقم التسلسل",
         "date d'expiration", "تاريخ الانتهاء",
         "lieu de résidence", "محل السكنى",
-        "fille de", "fils de", "بنت", "ابن",  # Apparaît sur le verso marocain
+        "fille de", "fils de", "بنت", "ابن",
         "n° état civil", "رقم الحالة المدنية", "etat civil",
-        "sexe", "الجنس",  # Apparaît sur le verso
-        "imm a", "lot", "temara", "rabat", "casa", "marrakech"  # Adresses
+        "sexe", "الجنس",
+        "imm a", "lot", "temara", "rabat", "casa", "marrakech"
     ],
-    # Mots-clés généraux CIN (présents sur les deux côtés)
     "general": [
         "marocain", "marocaine", "مغربي", "مغربية",
         "nom", "prénom", "prenom", "الاسم", "النسب"
     ]
 }
 
-# MOTS-CLÉS RELEVÉ BANCAIRE - PAR BANQUE
-# NOTE: Ne pas inclure "bank" seul car il peut apparaître dans des adresses (ex: "LOTS BANK CHAABI RUE")
 BANK_KEYWORDS = {
-    # Mots-clés généraux relevé bancaire - TRÈS SPÉCIFIQUES
     "general": [
         "relevé de compte", "releve de compte", "relevé bancaire",
         "extrait de compte", "كشف حساب", "كشف الحساب",
@@ -137,7 +117,6 @@ BANK_KEYWORDS = {
         "solde initial", "solde final", "nouveau solde",
         "virement reçu", "virement émis", "prélèvement", "versement espèces"
     ],
-    # Banques spécifiques (pour Level 2) - Noms complets uniquement
     "attijariwafa": ["attijariwafa bank", "attijari wafa", "التجاري وفا بنك"],
     "bank_of_africa": ["bank of africa", "bmce bank", "بنك أفريقيا"],
     "al_barid": ["al barid bank", "barid bank", "البريد بنك"],
@@ -148,9 +127,7 @@ BANK_KEYWORDS = {
     "societe_generale": ["société générale maroc", "societe generale maroc", "سوسيتي جنرال"]
 }
 
-# MOTS-CLÉS FACTURE EAU/ÉLECTRICITÉ - PAR FOURNISSEUR
 FACTURE_KEYWORDS = {
-    # Mots-clés généraux facture
     "general": [
         "facture", "فاتورة", "consommation", "استهلاك",
         "kwh", "m3", "كيلوواط", "متر مكعب",
@@ -162,7 +139,6 @@ FACTURE_KEYWORDS = {
         "référence client", "مرجع الزبون",
         "électricité", "كهرباء", "eau", "ماء"
     ],
-    # Fournisseurs spécifiques
     "onee": ["onee", "المكتب الوطني للكهرباء", "office national", "one"],
     "lydec": ["lydec", "ليديك", "casablanca"],
     "amendis": ["amendis", "أمانديس", "tanger", "tétouan"],
@@ -171,9 +147,7 @@ FACTURE_KEYWORDS = {
     "srm": ["srm", "الشركة الجهوية", "distribution"]
 }
 
-# MOTS-CLÉS DOCUMENT EMPLOYEUR - PAR TYPE
 EMPLOYEUR_KEYWORDS = {
-    # Mots-clés généraux document employeur
     "general": [
         "employeur", "المشغل", "salarié", "الأجير",
         "entreprise", "société", "شركة", "مقاولة",
@@ -184,7 +158,6 @@ EMPLOYEUR_KEYWORDS = {
         "cimr", "الصندوق المهني المغربي للتقاعد",
         "matricule", "رقم التسجيل"
     ],
-    # Attestation de travail
     "attestation": [
         "attestation de travail", "شهادة العمل",
         "attestation de salaire", "شهادة الأجر",
@@ -193,7 +166,6 @@ EMPLOYEUR_KEYWORDS = {
         "à titre de", "بصفة", "en qualité de",
         "attestation d'emploi", "شهادة التشغيل"
     ],
-    # Contrat de travail
     "contrat": [
         "contrat de travail", "عقد العمل", "عقد الشغل",
         "contrat à durée", "cdi", "cdd",
@@ -204,7 +176,6 @@ EMPLOYEUR_KEYWORDS = {
         "rémunération mensuelle", "الأجر الشهري",
         "obligations", "الالتزامات"
     ],
-    # Fiche/Bulletin de paie
     "fiche_paie": [
         "bulletin de paie", "بيان الأجر",
         "fiche de paie", "ورقة الأجر",
@@ -233,14 +204,11 @@ class DocumentClassifier:
         self.siglip_paths = None
         
     def load_models(self):
-        """Charge tous les modèles"""
         try:
             print(f"Chargement modèles sur {self.device}...")
-            # VLM Qwen
             self.qwen_processor, self.qwen_model = load_qwen_model(self.device)
             print("[OK] Qwen2-VL charge")
             
-            # RoBERTa (optionnel)
             try:
                 if Path(MODEL_ROBERTA).exists():
                     self.roberta_model, self.roberta_tokenizer = load_roberta_model(self.device)
@@ -249,7 +217,6 @@ class DocumentClassifier:
             except Exception as e:
                 print(f"[WARN] RoBERTa non disponible: {e}")
             
-            # ORB Gallery
             try:
                 self.orb_gallery = load_orb_gallery(str(ORB_CACHE_DIR))
                 if self.orb_gallery:
@@ -259,21 +226,18 @@ class DocumentClassifier:
             except Exception as e:
                 print(f"[WARN] ORB non disponible: {e}")
             
-            # SigLIP Index (pour RAG Level2)
             try:
                 if EMBEDDINGS_CACHE.exists() and PATHS_CACHE.exists():
                     self.siglip_embeddings = np.load(str(EMBEDDINGS_CACHE))
                     with open(PATHS_CACHE, 'r') as f:
                         import json
                         cache_data = json.load(f)
-                        # S'assurer que siglip_paths est toujours une liste
                         if isinstance(cache_data, dict):
                             self.siglip_paths = cache_data.get('paths', [])
                         elif isinstance(cache_data, list):
                             self.siglip_paths = cache_data
                         else:
                             self.siglip_paths = []
-                        # Vérifier que c'est bien une liste
                         if not isinstance(self.siglip_paths, list):
                             print(f"[WARN] siglip_paths n'est pas une liste: {type(self.siglip_paths)}")
                             self.siglip_paths = []
@@ -286,18 +250,15 @@ class DocumentClassifier:
             traceback.print_exc()
     
     def extract_ocr_text(self, image_path):
-        """Extrait le texte OCR d'une image avec support multilingue"""
         if not HAS_OCR:
             return None
         try:
             img = cv2.imread(str(image_path))
             if img is None:
-                # Essayer avec PIL
                 pil_img = Image.open(image_path)
                 img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
             
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            # OCR multilingue: français + arabe + anglais
             text = pytesseract.image_to_string(gray, lang="fra+ara+eng")
             return text.strip() if text.strip() else None
         except Exception as e:
@@ -305,7 +266,6 @@ class DocumentClassifier:
             return None
     
     def _count_keyword_matches(self, text, keywords):
-        """Compte le nombre de mots-clés trouvés dans le texte"""
         if not text:
             return 0
         text_lower = text.lower()
@@ -316,13 +276,6 @@ class DocumentClassifier:
         return count
     
     def _detect_level1_from_ocr(self, ocr_text):
-        """
-        Détecte la classe Level 1 (4 classes) à partir du texte OCR.
-        Retourne (classe, confiance, détails) ou (None, 0, {})
-        
-        PRIORITÉ: CIN > FACTURE > RELEVE BANCAIRE > DOCUMENT EMPLOYEUR
-        Car CIN a des mots-clés très distinctifs (état civil, valable jusqu'au, etc.)
-        """
         if not ocr_text:
             return None, 0.0, {}
         
@@ -330,13 +283,11 @@ class DocumentClassifier:
         scores = {}
         details = {}
         
-        # Score CIN - PRIORITÉ HAUTE car mots-clés très distinctifs
         cin_strong = self._count_keyword_matches(ocr_text, CIN_KEYWORDS["strong"])
         cin_front = self._count_keyword_matches(ocr_text, CIN_KEYWORDS["front"])
         cin_back = self._count_keyword_matches(ocr_text, CIN_KEYWORDS["back"])
         cin_general = self._count_keyword_matches(ocr_text, CIN_KEYWORDS["general"])
         
-        # Bonus spéciaux pour CIN (mots très distinctifs)
         cin_bonus = 0
         if "état civil" in text_lower or "etat civil" in text_lower or "الحالة المدنية" in ocr_text:
             cin_bonus += 5
@@ -345,30 +296,26 @@ class DocumentClassifier:
         if "fils de" in text_lower or "fille de" in text_lower:
             cin_bonus += 4
         if "adresse" in text_lower and ("n°" in text_lower or "sexe" in text_lower):
-            cin_bonus += 4  # Adresse + état civil = CIN verso
+            cin_bonus += 4
         
         cin_total = cin_strong * 4 + cin_front * 2 + cin_back * 2 + cin_general + cin_bonus
         scores["CIN"] = cin_total
         details["CIN"] = {"strong": cin_strong, "front": cin_front, "back": cin_back, "general": cin_general, "bonus": cin_bonus}
         
-        # Score Relevé Bancaire - SEULEMENT si mots-clés bancaires spécifiques
         bank_general = self._count_keyword_matches(ocr_text, BANK_KEYWORDS["general"])
         bank_specific = sum(
             self._count_keyword_matches(ocr_text, kws) 
             for key, kws in BANK_KEYWORDS.items() if key != "general"
         )
         
-        # IMPORTANT: Si CIN est détecté avec confiance, réduire le score bancaire
-        # Car "BANK CHAABI" peut apparaître dans une adresse de CIN
         bank_penalty = 0
-        if cin_total >= 5:  # CIN probable
-            bank_penalty = bank_general  # Annuler les mots-clés généraux bancaires
+        if cin_total >= 5:
+            bank_penalty = bank_general
         
         bank_total = max(0, bank_general * 2 + bank_specific * 3 - bank_penalty * 2)
         scores["RELEVE BANCAIRE"] = bank_total
         details["RELEVE BANCAIRE"] = {"general": bank_general, "specific": bank_specific, "penalty": bank_penalty}
         
-        # Score Facture
         facture_general = self._count_keyword_matches(ocr_text, FACTURE_KEYWORDS["general"])
         facture_specific = sum(
             self._count_keyword_matches(ocr_text, kws) 
@@ -378,7 +325,6 @@ class DocumentClassifier:
         scores["FACTURE D'EAU ET D'ELECTRICITE"] = facture_total
         details["FACTURE D'EAU ET D'ELECTRICITE"] = {"general": facture_general, "specific": facture_specific}
         
-        # Score Document Employeur
         emp_general = self._count_keyword_matches(ocr_text, EMPLOYEUR_KEYWORDS["general"])
         emp_attestation = self._count_keyword_matches(ocr_text, EMPLOYEUR_KEYWORDS["attestation"])
         emp_contrat = self._count_keyword_matches(ocr_text, EMPLOYEUR_KEYWORDS["contrat"])
@@ -389,41 +335,32 @@ class DocumentClassifier:
         
         print(f"[OCR SCORES] CIN={cin_total}, BANK={bank_total}, FACTURE={facture_total}, EMP={emp_total}")
         
-        # Trouver la meilleure classe
         if not scores or max(scores.values()) == 0:
             return None, 0.0, details
         
         best_class = max(scores, key=scores.get)
         best_score = scores[best_class]
         
-        # Seuil minimum: 3 points pour considérer comme détecté
         if best_score < 3:
             return None, 0.0, details
         
-        # Confiance basée sur le score (max ~25 points = 95%)
         confidence = min(0.95, 0.5 + (best_score / 50.0))
         
         return best_class, confidence, details
     
     def _detect_level2_from_ocr(self, ocr_text, level1_class):
-        """
-        Détecte la classe Level 2 (12+ classes exactes) à partir du texte OCR.
-        """
         if not ocr_text or not level1_class:
             return None, 0.0
         
         text_lower = ocr_text.lower()
         
-        # CIN: détecter front/back
         if level1_class == "CIN":
             text_lower = ocr_text.lower()
             front_score = 0
             back_score = 0
             
-            # ============ INDICATEURS DU RECTO (FRONT) ============
-            # Photo + informations personnelles de base
             if "royaume du maroc" in text_lower or "المملكة المغربية" in ocr_text:
-                front_score += 5  # En-tête du recto
+                front_score += 5
             if "carte nationale" in text_lower or "البطاقة الوطنية" in ocr_text:
                 front_score += 5
             if "né le" in text_lower or "née le" in text_lower:
@@ -433,15 +370,12 @@ class DocumentClassifier:
             if "lieu de naissance" in text_lower or "مكان الازدياد" in ocr_text:
                 front_score += 4
             if "tanger" in text_lower or "casablanca" in text_lower or "rabat" in text_lower or "marrakech" in text_lower:
-                # Ville de naissance (sur le recto)
                 if "né" in text_lower or "naissance" in text_lower:
                     front_score += 3
             
-            # ============ INDICATEURS DU VERSO (BACK) ============
-            # Adresse complète + validité + code MRZ
             has_mrz = "<<" in ocr_text or re.search(r"<{2,}", ocr_text)
             if has_mrz:
-                back_score += 15  # MRZ = TRÈS fort indicateur du verso
+                back_score += 15
             
             if "valable jusqu" in text_lower or "صالحة إلى" in ocr_text or "صالحة الى" in ocr_text:
                 back_score += 8
@@ -450,29 +384,23 @@ class DocumentClassifier:
             if "fille de" in text_lower or "fils de" in text_lower:
                 back_score += 5
             if "adresse" in text_lower and ("lot" in text_lower or "rue" in text_lower or "imm" in text_lower):
-                back_score += 6  # Adresse complète avec rue/lot = verso
+                back_score += 6
             if "sexe" in text_lower and ("m" in text_lower or "f" in text_lower):
                 back_score += 4
             
-            # ============ DISTINCTION CLÉE ============
-            # Le RECTO a "ROYAUME DU MAROC" en haut + photo
-            # Le VERSO a le code-barres MRZ en bas + adresse complète
-            
-            # Si on voit "Royaume du Maroc" SANS MRZ → c'est le recto
             if ("royaume" in text_lower or "المملكة" in ocr_text) and not has_mrz:
                 front_score += 8
             
             print(f"[DEBUG CIN] front_score={front_score}, back_score={back_score}, has_mrz={has_mrz}")
             
-            if back_score > front_score + 3:  # Marge de 3 points
+            if back_score > front_score + 3:
                 return "CIN_back", 0.90
             elif front_score > back_score:
                 return "CIN_front", 0.90
             elif front_score > 0:
-                return "CIN_front", 0.85  # Default si incertain
-            return "CIN_front", 0.6  # Default absolu
+                return "CIN_front", 0.85
+            return "CIN_front", 0.6
         
-        # Relevé Bancaire: détecter la banque
         if level1_class == "RELEVE BANCAIRE":
             bank_scores = {}
             bank_mapping = {
@@ -494,13 +422,11 @@ class DocumentClassifier:
             if bank_scores:
                 best_bank = max(bank_scores, key=bank_scores.get)
                 return best_bank, 0.85
-            return "Releve bancaire", 0.6  # Générique
+            return "Releve bancaire", 0.6
         
-        # Facture: une seule classe Level 2
         if level1_class == "FACTURE D'EAU ET D'ELECTRICITE":
             return "Facture d'eau et d'électricité", 0.9
         
-        # Document Employeur: détecter le type
         if level1_class == "DOCUMENT EMPLOYEUR":
             attestation_score = self._count_keyword_matches(ocr_text, EMPLOYEUR_KEYWORDS["attestation"])
             contrat_score = self._count_keyword_matches(ocr_text, EMPLOYEUR_KEYWORDS["contrat"])
@@ -515,12 +441,11 @@ class DocumentClassifier:
             if max(scores.values()) > 0:
                 best_type = max(scores, key=scores.get)
                 return best_type, 0.85
-            return "Attestation", 0.6  # Default
+            return "Attestation", 0.6
         
         return level1_class, 0.5
     
     def classify_vlm(self, image_path, is_level1=True):
-        """Classification avec VLM Qwen2-VL"""
         try:
             start_time = time.time()
             result, confidence = predict_level1_qwen(
@@ -541,7 +466,6 @@ class DocumentClassifier:
                     "raw_output": result
                 }
             else:
-                # Pour Level2, utiliser SigLIP RAG
                 return self._classify_level2_rag(image_path, elapsed, fallback_class=result)
         except Exception as e:
             print(f"Erreur VLM: {e}")
@@ -549,10 +473,6 @@ class DocumentClassifier:
             return None
     
     def _detect_cin_side_vlm(self, image_path):
-        """
-        Utilise VLM pour détecter si c'est CIN front ou back visuellement.
-        C'est plus fiable que l'OCR car le VLM voit la photo vs le code-barres.
-        """
         try:
             from PIL import Image as PILImage
             img = PILImage.open(image_path).convert('RGB')
@@ -613,7 +533,6 @@ Answer with ONLY one word: FRONT or BACK"""
             elif "BACK" in response:
                 return "CIN_back", 0.95
             else:
-                # Fallback: chercher des indices dans la réponse
                 if "PHOTO" in response or "FACE" in response or "PERSON" in response:
                     return "CIN_front", 0.85
                 elif "BARCODE" in response or "MRZ" in response:
@@ -625,10 +544,8 @@ Answer with ONLY one word: FRONT or BACK"""
             return None, 0.0
     
     def _classify_level2_rag(self, image_path, vlm_time, fallback_class=None):
-        """Classification Level2 avec SigLIP RAG"""
         try:
             if self.siglip_embeddings is None or self.siglip_paths is None:
-                # Fallback sur la classe Level1
                 return {
                     "class": fallback_class or "UNKNOWN",
                     "confidence": 0.5,
@@ -637,7 +554,6 @@ Answer with ONLY one word: FRONT or BACK"""
                     "raw_output": fallback_class
                 }
             
-            # Charger SigLIP pour RAG (lazy loading)
             from PreProcessing.test_rag import load_siglip_model
             siglip_processor, siglip_model = load_siglip_model(self.device)
             query_emb = embed_image_siglip(str(image_path), siglip_processor, siglip_model, self.device)
@@ -650,14 +566,12 @@ Answer with ONLY one word: FRONT or BACK"""
                     "raw_output": fallback_class
                 }
             
-            # Vérifier que siglip_paths est bien une liste
             if not isinstance(self.siglip_paths, list):
                 print(f"[WARN] siglip_paths n'est pas une liste avant retrieve_topk: {type(self.siglip_paths)}")
                 if isinstance(self.siglip_paths, dict):
                     if 'paths' in self.siglip_paths:
                         self.siglip_paths = self.siglip_paths['paths']
                     else:
-                        # Convertir dict avec clés numériques en liste
                         sorted_keys = sorted([k for k in self.siglip_paths.keys() if isinstance(k, (int, str))])
                         self.siglip_paths = [self.siglip_paths[k] for k in sorted_keys]
                 else:
@@ -673,7 +587,6 @@ Answer with ONLY one word: FRONT or BACK"""
                             "raw_output": fallback_class
                         }
             
-            # Récupérer top-k similaires
             topk_results = retrieve_topk(
                 query_emb,
                 self.siglip_embeddings,
@@ -681,7 +594,6 @@ Answer with ONLY one word: FRONT or BACK"""
                 k=20
             )
             
-            # Prédire label Level2
             label12, confidence = predict_label12(topk_results, DATASET_ROOT, query_image_path=str(image_path))
             
             return {
@@ -690,7 +602,7 @@ Answer with ONLY one word: FRONT or BACK"""
                 "model": "VLM_RAG",
                 "elapsed": vlm_time,
                 "raw_output": label12,
-                "topk": topk_results[:5]  # Top-5 pour debug
+                "topk": topk_results[:5]
             }
         except Exception as e:
             print(f"Erreur RAG Level2: {e}")
@@ -704,7 +616,6 @@ Answer with ONLY one word: FRONT or BACK"""
             }
     
     def classify_orb(self, image_path):
-        """Classification avec ORB"""
         try:
             if self.orb_gallery is None:
                 return None
@@ -735,14 +646,12 @@ Answer with ONLY one word: FRONT or BACK"""
             return None
     
     def classify_roberta(self, text):
-        """Classification avec RoBERTa (nécessite texte OCR)"""
         try:
             if not text or self.roberta_model is None or self.roberta_tokenizer is None:
                 return None
             
             start_time = time.time()
             
-            # Tokeniser et prédire
             inputs = self.roberta_tokenizer(text, return_tensors="pt", truncation=True, max_length=512, padding=True)
             inputs = {k: v.to(self.device) for k, v in inputs.items()}
             
@@ -751,7 +660,6 @@ Answer with ONLY one word: FRONT or BACK"""
                 logits = outputs.logits
                 probs = torch.softmax(logits, dim=-1)
             
-            # Utiliser id2label depuis le modèle config
             id2label = self.roberta_model.config.id2label if hasattr(self.roberta_model.config, 'id2label') and self.roberta_model.config.id2label else None
             
             if id2label:
@@ -759,7 +667,6 @@ Answer with ONLY one word: FRONT or BACK"""
                 predicted_class = id2label[predicted_idx]
                 confidence = float(probs[0][predicted_idx])
                 
-                # Top classes
                 num_classes = probs.shape[1]
                 k = min(5, num_classes)
                 top_probs, top_indices = torch.topk(probs[0], k)
@@ -768,7 +675,6 @@ Answer with ONLY one word: FRONT or BACK"""
                     for prob, idx in zip(top_probs, top_indices)
                 ]
             else:
-                # Fallback: utiliser LEVEL1_CLASSES
                 import pandas as pd
                 dataset_file = Path(__file__).parent.parent / "dataset" / "Data.xlsx"
                 if dataset_file.exists():
@@ -803,15 +709,6 @@ Answer with ONLY one word: FRONT or BACK"""
             return None
     
     def fuse_results(self, vlm_result, orb_result, roberta_result, ocr_text=None):
-        """
-        Fusion des résultats des 3 modèles avec détection OCR prioritaire.
-        
-        Stratégie de robustesse:
-        1. OCR mots-clés (très fiable pour CIN, factures)
-        2. Si ORB + RoBERTa sont d'accord → ils surpassent VLM
-        3. Si OCR + un autre modèle sont d'accord → très fiable
-        4. Sinon VLM comme fallback
-        """
         vlm_class = vlm_result.get("class") if vlm_result else None
         vlm_conf = vlm_result.get("confidence", 0.0) if vlm_result else 0.0
         
@@ -821,23 +718,20 @@ Answer with ONLY one word: FRONT or BACK"""
         roberta_class = roberta_result.get("class") if roberta_result else None
         roberta_conf = roberta_result.get("confidence", 0.0) if roberta_result else 0.0
         
-        # ÉTAPE 1: Détecter via OCR (mots-clés)
         ocr_class, ocr_conf, ocr_details = self._detect_level1_from_ocr(ocr_text)
         
         print(f"[FUSION] VLM={vlm_class}({vlm_conf:.2f}), ORB={orb_class}({orb_conf:.2f}), RoBERTa={roberta_class}({roberta_conf:.2f}), OCR={ocr_class}({ocr_conf:.2f})")
         
-        # ÉTAPE 2: Vote majoritaire - Si 2+ modèles sont d'accord, c'est probablement correct
         votes = {}
         if vlm_class and vlm_class in LEVEL1_CLASSES:
             votes[vlm_class] = votes.get(vlm_class, 0) + vlm_conf
         if orb_class and orb_class in LEVEL1_CLASSES:
-            votes[orb_class] = votes.get(orb_class, 0) + orb_conf + 0.2  # Bonus ORB (features visuelles)
+            votes[orb_class] = votes.get(orb_class, 0) + orb_conf + 0.2
         if roberta_class and roberta_class in LEVEL1_CLASSES:
-            votes[roberta_class] = votes.get(roberta_class, 0) + roberta_conf + 0.1  # Bonus RoBERTa (texte)
+            votes[roberta_class] = votes.get(roberta_class, 0) + roberta_conf + 0.1
         if ocr_class and ocr_class in LEVEL1_CLASSES:
-            votes[ocr_class] = votes.get(ocr_class, 0) + ocr_conf + 0.3  # Bonus OCR (mots-clés très fiables)
+            votes[ocr_class] = votes.get(ocr_class, 0) + ocr_conf + 0.3
         
-        # RÈGLE SPÉCIALE: Si ORB + RoBERTa sont d'accord et différents de VLM → ils gagnent
         if orb_class and roberta_class and orb_class == roberta_class and orb_class != vlm_class:
             print(f"[FUSION] ORB + RoBERTa d'accord ({orb_class}), surpassent VLM ({vlm_class})")
             best_class = orb_class
@@ -853,7 +747,6 @@ Answer with ONLY one word: FRONT or BACK"""
                 "ocr_details": ocr_details if ocr_class else {}
             }
         
-        # RÈGLE SPÉCIALE: Si OCR + un autre modèle sont d'accord → très fiable
         if ocr_class and ocr_conf >= 0.5:
             agreements = 0
             if orb_class == ocr_class: agreements += 1
@@ -872,7 +765,6 @@ Answer with ONLY one word: FRONT or BACK"""
                     "ocr_details": ocr_details
                 }
         
-        # RÈGLE: OCR seul avec haute confiance
         if ocr_class and ocr_conf >= 0.75:
             print(f"[FUSION] OCR haute confiance ({ocr_class}, {ocr_conf:.2f})")
             return {
@@ -884,16 +776,14 @@ Answer with ONLY one word: FRONT or BACK"""
                 "ocr_details": ocr_details
             }
         
-        # FALLBACK: Utiliser le vote majoritaire
         if votes:
             best_class = max(votes, key=votes.get)
-            final_confidence = min(0.95, votes[best_class] / 2)  # Normaliser
+            final_confidence = min(0.95, votes[best_class] / 2)
             print(f"[FUSION] Vote majoritaire: {best_class} (score={votes[best_class]:.2f})")
         else:
             best_class = vlm_class or "UNKNOWN"
             final_confidence = vlm_conf if vlm_class else 0.5
         
-        # Calculer les scores pour l'affichage
         level1_scores = {cls: 0.0 for cls in LEVEL1_CLASSES}
         if best_class in level1_scores:
             level1_scores[best_class] = final_confidence
@@ -912,7 +802,6 @@ Answer with ONLY one word: FRONT or BACK"""
         }
     
     def classify_document(self, file_path, is_pdf=False):
-        """Classification complète d'un document (image ou PDF)"""
         results = {
             "pages": [],
             "final_level1": None,
@@ -924,10 +813,8 @@ Answer with ONLY one word: FRONT or BACK"""
         
         try:
             if is_pdf:
-                # Traiter PDF page par page
                 pages = extract_pdf_pages(str(file_path))
                 for page_num, pil_img in pages:
-                    # Sauvegarder temporairement
                     temp_path = UPLOAD_DIR / f"temp_page_{page_num}.png"
                     pil_img.save(temp_path)
                     
@@ -935,13 +822,11 @@ Answer with ONLY one word: FRONT or BACK"""
                     page_result["page"] = page_num
                     results["pages"].append(page_result)
                     
-                    # Nettoyer
                     try:
                         temp_path.unlink()
                     except:
                         pass
                 
-                # Vote final pour PDF (moyenne des pages)
                 if results["pages"]:
                     level1_votes = {}
                     level2_votes = {}
@@ -961,7 +846,6 @@ Answer with ONLY one word: FRONT or BACK"""
                     results["final_level2"] = max(level2_votes, key=level2_votes.get) if level2_votes else None
                     results["final_confidence"] = np.mean(confidences) if confidences else 0.0
             else:
-                # Image unique
                 page_result = self._classify_single_image(file_path)
                 page_result["page"] = 1
                 results["pages"].append(page_result)
@@ -969,7 +853,6 @@ Answer with ONLY one word: FRONT or BACK"""
                 results["final_level2"] = page_result.get("final_level2")
                 results["final_confidence"] = page_result.get("final_confidence", 0.0)
             
-            # Résumé des modèles utilisés
             results["models_results"] = {
                 "vlm_available": self.qwen_model is not None,
                 "orb_available": self.orb_gallery is not None,
@@ -985,7 +868,6 @@ Answer with ONLY one word: FRONT or BACK"""
         return results
     
     def _classify_single_image(self, image_path):
-        """Classification d'une seule image"""
         result = {
             "vlm_level1": None,
             "vlm_level2": None,
@@ -997,24 +879,18 @@ Answer with ONLY one word: FRONT or BACK"""
             "final_confidence": 0.0
         }
         
-        # OCR d'abord (utilisé pour mots-clés et RoBERTa)
         ocr_text = self.extract_ocr_text(image_path)
-        result["ocr_text"] = ocr_text[:500] if ocr_text else None  # Limiter pour le JSON
+        result["ocr_text"] = ocr_text[:500] if ocr_text else None
         
-        # Pré-détection OCR pour guider les autres modèles
         ocr_predetect, ocr_preconf, _ = self._detect_level1_from_ocr(ocr_text)
         print(f"[DEBUG] OCR pré-détection: {ocr_predetect} (conf: {ocr_preconf:.2f})")
         
-        # VLM Level1
         vlm_l1 = self.classify_vlm(image_path, is_level1=True)
         result["vlm_level1"] = vlm_l1
         
-        # VLM Level2
         vlm_l2 = self.classify_vlm(image_path, is_level1=False)
         result["vlm_level2"] = vlm_l2
         
-        # ORB - TOUJOURS l'exécuter sauf si OCR détecte DOCUMENT EMPLOYEUR avec haute confiance
-        # Car DOCUMENT EMPLOYEUR a des structures très variables (attestations, contrats, fiches de paie)
         skip_orb = (ocr_predetect == "DOCUMENT EMPLOYEUR" and ocr_preconf >= 0.8)
         
         if not skip_orb:
@@ -1022,11 +898,10 @@ Answer with ONLY one word: FRONT or BACK"""
             result["orb"] = orb_res
             print(f"[DEBUG] ORB result: {orb_res.get('class') if orb_res else 'None'}")
         else:
-            result["orb"] = None  # ORB non utilisé pour DOCUMENT EMPLOYEUR détecté par OCR
+            result["orb"] = None
             orb_res = None
             print(f"[DEBUG] ORB skipped (DOCUMENT EMPLOYEUR detected by OCR)")
         
-        # RoBERTa (si OCR disponible)
         if ocr_text:
             roberta_res = self.classify_roberta(ocr_text)
             result["roberta"] = roberta_res
@@ -1034,25 +909,20 @@ Answer with ONLY one word: FRONT or BACK"""
             result["roberta"] = None
             roberta_res = None
         
-        # Fusion Level1 (avec OCR pour détection par mots-clés)
         fusion_l1 = self.fuse_results(vlm_l1, orb_res, result["roberta"], ocr_text=ocr_text)
         result["final_level1"] = fusion_l1["level1"]
         result["final_confidence"] = fusion_l1["confidence"]
         
-        # Level2: déterminer la classe exacte
         if result["final_level1"] == "CIN":
-            # Pour CIN: utiliser VLM pour détecter front/back visuellement (plus fiable!)
             vlm_cin_side, vlm_cin_conf = self._detect_cin_side_vlm(image_path)
             if vlm_cin_side and vlm_cin_conf >= 0.8:
                 result["final_level2"] = vlm_cin_side
                 print(f"[CIN SIDE] VLM detected: {vlm_cin_side} (conf: {vlm_cin_conf:.2f})")
             else:
-                # Fallback sur OCR
                 ocr_l2, ocr_l2_conf = self._detect_level2_from_ocr(ocr_text, result["final_level1"])
                 result["final_level2"] = ocr_l2 or "CIN_front"
                 print(f"[CIN SIDE] OCR fallback: {result['final_level2']}")
         else:
-            # Pour les autres classes: utiliser OCR puis VLM/RAG
             ocr_l2, ocr_l2_conf = self._detect_level2_from_ocr(ocr_text, result["final_level1"])
             
             if ocr_l2 and ocr_l2_conf >= 0.8:
@@ -1065,11 +935,9 @@ Answer with ONLY one word: FRONT or BACK"""
         return result
 
 
-# Instance globale
 _classifier = None
 
 def get_classifier(use_cpu=False):
-    """Singleton pour le classifieur"""
     global _classifier
     if _classifier is None:
         _classifier = DocumentClassifier(use_cpu=use_cpu)

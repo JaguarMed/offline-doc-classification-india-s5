@@ -46,3 +46,5 @@ Utilisez le notebook Colab fourni pour fine-tuner XLM-RoBERTa sur vos propres do
 - **Fine-tuning**: Classification de documents marocains (4 classes)
 - **Classes**: CIN, RELEVE BANCAIRE, FACTURE, DOCUMENT EMPLOYEUR
 
+
+
